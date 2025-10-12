@@ -1,0 +1,33 @@
+
+// ...existing schema header...
+enum Role {
+  admin
+  user
+  guest
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(user)
+  posts     Post[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Post {
+  id        String   @id @default(cuid())
+  title     String
+  content   String?
+  authorId  String
+  author    User     @relation(fields: [authorId], references: [id])
+  tags      Tag[]    @relation("PostTags")
+  createdAt DateTime @default(now())
+}
+
+model Tag {
+  id     String  @id @default(cuid())
+  name   String  @unique
+  posts  Post[]  @relation("PostTags")
+}

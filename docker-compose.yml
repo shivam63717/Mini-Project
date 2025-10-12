@@ -1,0 +1,39 @@
+
+version: "3.9"
+services:
+  app:
+    build: .
+    container_name: mlvision-backend
+    env_file: .env
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "npx prisma migrate deploy || true &&
+             node server.js"
+    # If using dist:
+    # command: node dist/index.js
+    restart: unless-stopped
+
+  db:
+    image: postgres:15-alpine
+    container_name: mlvision-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-apppass}
+      POSTGRES_DB: ${POSTGRES_DB:-appdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  db_data:

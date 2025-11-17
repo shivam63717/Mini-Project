@@ -1,86 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { RedisService, RedisKeys } from '@/lib/database/redis'
 
-// Mock data for experiments
-const mockExperiments = [
-  {
-    id: '1',
-    name: 'Malware Detection Model',
-    description: 'Binary classification model for malware detection using network features',
-    status: 'running',
-    algorithm: 'Random Forest',
-    accuracy: 0.942,
-    precision: 0.938,
-    recall: 0.945,
-    f1Score: 0.941,
-    createdAt: '2024-01-15T09:00:00Z',
-    updatedAt: '2024-01-15T11:30:00Z',
-    datasetId: '2',
-    hyperparameters: {
-      n_estimators: 100,
-      max_depth: 10,
-      min_samples_split: 2,
-      min_samples_leaf: 1,
-      random_state: 42
-    },
-    metrics: {
-      training_time: 45.2,
-      inference_time: 0.012,
-      memory_usage: 128.5
-    }
-  },
-  {
-    id: '2',
-    name: 'Network Anomaly Detection',
-    description: 'Unsupervised anomaly detection for network traffic patterns',
-    status: 'completed',
-    algorithm: 'Isolation Forest',
-    accuracy: 0.876,
-    precision: 0.892,
-    recall: 0.861,
-    f1Score: 0.876,
-    createdAt: '2024-01-14T14:00:00Z',
-    updatedAt: '2024-01-14T16:45:00Z',
-    datasetId: '1',
-    hyperparameters: {
-      n_estimators: 200,
-      contamination: 0.1,
-      max_samples: 0.8,
-      random_state: 42
-    },
-    metrics: {
-      training_time: 23.8,
-      inference_time: 0.008,
-      memory_usage: 95.2
-    }
-  },
-  {
-    id: '3',
-    name: 'User Behavior Classification',
-    description: 'Multi-class classification for user behavior patterns',
-    status: 'failed',
-    algorithm: 'XGBoost',
-    accuracy: 0.0,
-    precision: 0.0,
-    recall: 0.0,
-    f1Score: 0.0,
-    createdAt: '2024-01-13T10:00:00Z',
-    updatedAt: '2024-01-13T10:15:00Z',
-    datasetId: '3',
-    hyperparameters: {
-      n_estimators: 1000,
-      max_depth: 6,
-      learning_rate: 0.1,
-      subsample: 0.8,
-      random_state: 42
-    },
-    metrics: {
-      training_time: 0,
-      inference_time: 0,
-      memory_usage: 0
-    },
-    error: 'Insufficient training data for multi-class classification'
+interface Experiment {
+  id: string
+  name: string
+  description: string
+  status: string
+  algorithm: string
+  accuracy: number
+  precision: number
+  recall: number
+  f1Score: number
+  createdAt: string
+  updatedAt: string
+  datasetId: string
+  hyperparameters: Record<string, any>
+  metrics: {
+    training_time: number
+    inference_time: number
+    memory_usage: number
   }
-]
+  error?: string
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -90,8 +31,20 @@ export async function GET(request: NextRequest) {
     const status = searchParams.get('status') || ''
     const algorithm = searchParams.get('algorithm') || ''
 
+    // Get all experiment IDs from Redis list
+    const experimentIds = await RedisService.lrange<string>(RedisKeys.EXPERIMENTS_LIST, 0, -1)
+    
+    // Fetch all experiments
+    const allExperiments: Experiment[] = []
+    for (const id of experimentIds) {
+      const experiment = await RedisService.get<Experiment>(RedisKeys.EXPERIMENT(id))
+      if (experiment) {
+        allExperiments.push(experiment)
+      }
+    }
+
     // Filter experiments
-    let filteredExperiments = mockExperiments
+    let filteredExperiments = allExperiments
 
     if (status) {
       filteredExperiments = filteredExperiments.filter(exp => exp.status === status)
@@ -139,9 +92,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Generate new ID
+    const idSeq = await RedisService.get<number>('experiment:id:seq') || 0
+    const newId = String(idSeq + 1)
+    await RedisService.set('experiment:id:seq', idSeq + 1)
+
     // Create new experiment
-    const newExperiment = {
-      id: (mockExperiments.length + 1).toString(),
+    const newExperiment: Experiment = {
+      id: newId,
       name,
       description,
       status: 'pending',
@@ -161,7 +119,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    mockExperiments.push(newExperiment)
+    // Store experiment in Redis
+    await RedisService.set(RedisKeys.EXPERIMENT(newId), newExperiment)
+    await RedisService.rpush(RedisKeys.EXPERIMENTS_LIST, newId)
 
     return NextResponse.json({
       success: true,

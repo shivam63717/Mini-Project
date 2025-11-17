@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { RedisService, RedisKeys } from '@/lib/database/redis'
 
-// Mock analytics data
+// Mock analytics data (fallback)
 const mockAnalyticsData = {
   timeSeries: {
     labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
@@ -169,6 +170,20 @@ export async function GET(request: NextRequest) {
     const type = searchParams.get('type') || 'all'
     const datasetId = searchParams.get('datasetId')
 
+    // Try to get from Redis cache if datasetId is provided
+    if (datasetId && type !== 'all') {
+      const cacheKey = RedisKeys.ANALYTICS_RESULT(type, datasetId)
+      const cached = await RedisService.get<any>(cacheKey)
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          data: cached,
+          cached: true
+        })
+      }
+    }
+
+    // Fallback to mock data
     if (type === 'all') {
       return NextResponse.json({
         success: true,
@@ -213,19 +228,23 @@ export async function POST(request: NextRequest) {
     // Simulate analytics processing
     const processingId = `analytics_${Date.now()}`
     
+    // Store processing status in Redis
+    const processingStatus = {
+      processingId,
+      status: 'processing',
+      type,
+      datasetId,
+      parameters,
+      estimatedTime: '2-5 minutes',
+      createdAt: new Date().toISOString()
+    }
+    
+    await RedisService.set(RedisKeys.ANALYTICS_RESULT(type, processingId), processingStatus, 3600)
+    
     // In a real implementation, this would trigger background processing
-    // For now, we'll return a processing status
     return NextResponse.json({
       success: true,
-      data: {
-        processingId,
-        status: 'processing',
-        type,
-        datasetId,
-        parameters,
-        estimatedTime: '2-5 minutes',
-        createdAt: new Date().toISOString()
-      }
+      data: processingStatus
     }, { status: 202 })
   } catch (error) {
     console.error('Error processing analytics:', error)

@@ -1,44 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { RedisService, RedisKeys } from '@/lib/database/redis'
 
-// Mock data for demonstration
-const mockDatasets = [
-  {
-    id: '1',
-    name: 'Cybersecurity Logs',
-    description: 'Network security event logs from firewall and IDS systems',
-    size: '2.4 MB',
-    rows: 15420,
-    columns: 12,
-    createdAt: '2024-01-15T10:30:00Z',
-    updatedAt: '2024-01-15T10:30:00Z',
-    status: 'active',
-    tags: ['security', 'network', 'logs']
-  },
-  {
-    id: '2',
-    name: 'Malware Samples',
-    description: 'Binary features extracted from malware samples',
-    size: '8.7 MB',
-    rows: 8920,
-    columns: 25,
-    createdAt: '2024-01-14T14:20:00Z',
-    updatedAt: '2024-01-14T14:20:00Z',
-    status: 'active',
-    tags: ['malware', 'binary', 'features']
-  },
-  {
-    id: '3',
-    name: 'User Behavior Analytics',
-    description: 'User activity patterns and authentication events',
-    size: '15.2 MB',
-    rows: 45680,
-    columns: 18,
-    createdAt: '2024-01-13T09:15:00Z',
-    updatedAt: '2024-01-13T09:15:00Z',
-    status: 'processing',
-    tags: ['user', 'behavior', 'analytics']
-  }
-]
+interface Dataset {
+  id: string
+  name: string
+  description: string
+  size: string
+  rows: number
+  columns: number
+  createdAt: string
+  updatedAt: string
+  status: string
+  tags: string[]
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -48,8 +22,20 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search') || ''
     const status = searchParams.get('status') || ''
 
+    // Get all dataset IDs from Redis list
+    const datasetIds = await RedisService.lrange<string>(RedisKeys.DATASETS_LIST, 0, -1)
+    
+    // Fetch all datasets
+    const allDatasets: Dataset[] = []
+    for (const id of datasetIds) {
+      const dataset = await RedisService.get<Dataset>(RedisKeys.DATASET(id))
+      if (dataset) {
+        allDatasets.push(dataset)
+      }
+    }
+
     // Filter datasets
-    let filteredDatasets = mockDatasets
+    let filteredDatasets = allDatasets
 
     if (search) {
       filteredDatasets = filteredDatasets.filter(dataset =>
@@ -99,9 +85,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Generate new ID
+    const idSeq = await RedisService.get<number>('dataset:id:seq') || 0
+    const newId = String(idSeq + 1)
+    await RedisService.set('dataset:id:seq', idSeq + 1)
+
     // Create new dataset
-    const newDataset = {
-      id: (mockDatasets.length + 1).toString(),
+    const newDataset: Dataset = {
+      id: newId,
       name,
       description,
       size: '0 MB',
@@ -113,7 +104,9 @@ export async function POST(request: NextRequest) {
       tags: tags || []
     }
 
-    mockDatasets.push(newDataset)
+    // Store dataset in Redis
+    await RedisService.set(RedisKeys.DATASET(newId), newDataset)
+    await RedisService.rpush(RedisKeys.DATASETS_LIST, newId)
 
     return NextResponse.json({
       success: true,

@@ -1,6 +1,8 @@
-import { NextRequest, NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+import { NextResponse } from 'next/server'
+import { RedisService } from '@/lib/database/redis'
 
-export function middleware(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   // Handle CORS
   const response = NextResponse.next()
 
@@ -30,6 +32,20 @@ export function middleware(request: NextRequest) {
   response.headers.set('X-Content-Type-Options', 'nosniff')
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
   response.headers.set('X-XSS-Protection', '1; mode=block')
+
+  // Session handling with Redis
+  const sessionToken = request.cookies.get('session')?.value
+  if (sessionToken) {
+    try {
+      const session = await RedisService.get<{ userId: string }>(`session:${sessionToken}`)
+      if (session) {
+        response.headers.set('x-user-id', session.userId)
+      }
+    } catch (error) {
+      // If Redis fails, continue without session (fail open)
+      console.error('Session lookup error:', error)
+    }
+  }
 
   // HTTPS redirect in production
   if (process.env.NODE_ENV === 'production' && request.headers.get('x-forwarded-proto') !== 'https') {

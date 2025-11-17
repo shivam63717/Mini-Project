@@ -3,6 +3,7 @@ import { writeFile, mkdir } from 'fs/promises'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { CSVAnalyzer } from '@/lib/services/csv-analyzer'
+import { RedisService, RedisKeys } from '@/lib/database/redis'
 
 // Configure upload directory
 const UPLOAD_DIR = join(process.cwd(), 'uploads')
@@ -74,7 +75,9 @@ export async function POST(request: NextRequest) {
       type: file.type,
       uploadedAt: new Date().toISOString(),
       path: filepath,
-      status: 'uploaded'
+      status: 'uploaded' as string,
+      rows: 0,
+      columns: 0
     }
 
     // Analyze CSV file if it's a CSV
@@ -83,11 +86,19 @@ export async function POST(request: NextRequest) {
       try {
         analysis = await CSVAnalyzer.analyzeFile(filepath, timestamp.toString(), originalName)
         fileInfo.status = 'analyzed'
+        if (analysis) {
+          fileInfo.rows = analysis.rows || 0
+          fileInfo.columns = analysis.columnCount || 0
+        }
       } catch (error) {
         console.error('Error analyzing CSV:', error)
         // Continue with upload even if analysis fails
       }
     }
+
+    // Store file info in Redis
+    await RedisService.set(RedisKeys.UPLOAD_FILE(timestamp.toString()), fileInfo)
+    await RedisService.rpush(RedisKeys.UPLOAD_FILES_LIST, timestamp.toString())
 
     return NextResponse.json({
       success: true,
@@ -113,47 +124,25 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1')
     const limit = parseInt(searchParams.get('limit') || '10')
 
-    // Mock uploaded files data
-    const mockFiles = [
-      {
-        id: '1',
-        originalName: 'security_logs.csv',
-        filename: '1705320000000_security_logs.csv',
-        size: 2457600,
-        type: 'text/csv',
-        uploadedAt: '2024-01-15T10:30:00Z',
-        status: 'processed',
-        rows: 15420,
-        columns: 12
-      },
-      {
-        id: '2',
-        originalName: 'malware_features.json',
-        filename: '1705308000000_malware_features.json',
-        size: 8912000,
-        type: 'application/json',
-        uploadedAt: '2024-01-14T14:20:00Z',
-        status: 'processing',
-        rows: 8920,
-        columns: 25
-      },
-      {
-        id: '3',
-        originalName: 'user_behavior.xlsx',
-        filename: '1705296000000_user_behavior.xlsx',
-        size: 15200000,
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        uploadedAt: '2024-01-13T09:15:00Z',
-        status: 'uploaded',
-        rows: 0,
-        columns: 0
+    // Get all uploaded file IDs from Redis list
+    const fileIds = await RedisService.lrange<string>(RedisKeys.UPLOAD_FILES_LIST, 0, -1)
+    
+    // Fetch all file info
+    const allFiles = []
+    for (const id of fileIds) {
+      const fileInfo = await RedisService.get<any>(RedisKeys.UPLOAD_FILE(id))
+      if (fileInfo) {
+        allFiles.push(fileInfo)
       }
-    ]
+    }
+
+    // Sort by upload date (newest first)
+    allFiles.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime())
 
     // Pagination
     const startIndex = (page - 1) * limit
     const endIndex = startIndex + limit
-    const paginatedFiles = mockFiles.slice(startIndex, endIndex)
+    const paginatedFiles = allFiles.slice(startIndex, endIndex)
 
     return NextResponse.json({
       success: true,
@@ -161,8 +150,8 @@ export async function GET(request: NextRequest) {
       pagination: {
         page,
         limit,
-        total: mockFiles.length,
-        totalPages: Math.ceil(mockFiles.length / limit)
+        total: allFiles.length,
+        totalPages: Math.ceil(allFiles.length / limit)
       }
     })
   } catch (error) {

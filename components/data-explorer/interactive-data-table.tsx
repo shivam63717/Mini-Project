@@ -1,67 +1,18 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Search, Filter, Download, ArrowUpDown, Eye, MoreHorizontal } from "lucide-react"
+import { Search, Filter, Download, ArrowUpDown, Eye, MoreHorizontal, Loader2 } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
-const sampleData = [
-  {
-    id: 1,
-    timestamp: "2024-01-15 14:23:45",
-    threat_type: "Malware",
-    severity_score: 85,
-    source_ip: "192.168.1.100",
-    destination_ip: "10.0.0.50",
-    bytes_transferred: 2048576,
-    status: "Blocked",
-  },
-  {
-    id: 2,
-    timestamp: "2024-01-15 14:24:12",
-    threat_type: "Phishing",
-    severity_score: 72,
-    source_ip: "203.0.113.45",
-    destination_ip: "10.0.0.25",
-    bytes_transferred: 1024000,
-    status: "Flagged",
-  },
-  {
-    id: 3,
-    timestamp: "2024-01-15 14:25:03",
-    threat_type: "DDoS",
-    severity_score: 95,
-    source_ip: "198.51.100.78",
-    destination_ip: "10.0.0.10",
-    bytes_transferred: 5242880,
-    status: "Blocked",
-  },
-  {
-    id: 4,
-    timestamp: "2024-01-15 14:26:18",
-    threat_type: "Intrusion",
-    severity_score: 68,
-    source_ip: "172.16.0.200",
-    destination_ip: "10.0.0.75",
-    bytes_transferred: 512000,
-    status: "Monitoring",
-  },
-  {
-    id: 5,
-    timestamp: "2024-01-15 14:27:34",
-    threat_type: "Malware",
-    severity_score: 91,
-    source_ip: "192.0.2.150",
-    destination_ip: "10.0.0.30",
-    bytes_transferred: 3145728,
-    status: "Blocked",
-  },
-]
+interface InteractiveDataTableProps {
+  datasetId?: string
+}
 
 function getSeverityColor(score: number) {
   if (score >= 90) return "destructive"
@@ -83,7 +34,10 @@ function getStatusColor(status: string) {
   }
 }
 
-export function InteractiveDataTable() {
+export function InteractiveDataTable({ datasetId }: InteractiveDataTableProps = {}) {
+  const [data, setData] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState("")
   const [sortColumn, setSortColumn] = useState("")
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc")
@@ -91,11 +45,59 @@ export function InteractiveDataTable() {
   const [currentPage, setCurrentPage] = useState(1)
   const itemsPerPage = 10
 
-  const filteredData = sampleData.filter((row) => {
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!datasetId) {
+        try {
+          const datasetsResponse = await fetch('/api/datasets?limit=1')
+          const datasetsResult = await datasetsResponse.json()
+          if (datasetsResult.success && datasetsResult.data.length > 0) {
+            const firstDatasetId = datasetsResult.data[0].id
+            await loadSampleData(firstDatasetId)
+          } else {
+            setData([])
+            setLoading(false)
+          }
+        } catch (err) {
+          console.error('Error fetching datasets:', err)
+          setError('Failed to load datasets')
+          setLoading(false)
+        }
+      } else {
+        await loadSampleData(datasetId)
+      }
+    }
+
+    fetchData()
+  }, [datasetId])
+
+  const loadSampleData = async (id: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await fetch(`/api/datasets/${id}/sample?limit=1000`)
+      const result = await response.json()
+      if (result.success) {
+        setData(result.data || [])
+      } else {
+        setError(result.error || 'Failed to load data')
+        setData([])
+      }
+    } catch (err) {
+      console.error('Error fetching sample data:', err)
+      setError('Failed to load sample data')
+      setData([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const filteredData = data.filter((row) => {
     const matchesSearch = Object.values(row).some((value) =>
-      value.toString().toLowerCase().includes(searchTerm.toLowerCase()),
+      value?.toString().toLowerCase().includes(searchTerm.toLowerCase()),
     )
-    const matchesFilter = filterType === "all" || row.threat_type.toLowerCase() === filterType.toLowerCase()
+    const threatType = row.threat_type || row.type || row.category || ''
+    const matchesFilter = filterType === "all" || threatType.toString().toLowerCase() === filterType.toLowerCase()
     return matchesSearch && matchesFilter
   })
 
@@ -111,6 +113,17 @@ export function InteractiveDataTable() {
     }
   })
 
+  // Apply pagination
+  const totalPages = Math.ceil(sortedData.length / itemsPerPage)
+  const startIndex = (currentPage - 1) * itemsPerPage
+  const endIndex = startIndex + itemsPerPage
+  const paginatedData = sortedData.slice(startIndex, endIndex)
+
+  // Reset to page 1 if current page is out of bounds
+  if (currentPage > totalPages && totalPages > 0) {
+    setCurrentPage(1)
+  }
+
   const handleSort = (column: string) => {
     if (sortColumn === column) {
       setSortDirection(sortDirection === "asc" ? "desc" : "asc")
@@ -118,6 +131,8 @@ export function InteractiveDataTable() {
       setSortColumn(column)
       setSortDirection("asc")
     }
+    // Reset to first page when sorting changes
+    setCurrentPage(1)
   }
 
   return (
@@ -179,7 +194,8 @@ export function InteractiveDataTable() {
             <div>
               <CardTitle>Data Records</CardTitle>
               <CardDescription>
-                Showing {sortedData.length} of {sampleData.length} records
+                Showing {sortedData.length} of {data.length} records
+                {datasetId && ` (Dataset: ${datasetId})`}
               </CardDescription>
             </div>
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -199,8 +215,25 @@ export function InteractiveDataTable() {
           </div>
         </CardHeader>
         <CardContent>
-          <div className="rounded-lg border border-border overflow-hidden">
-            <Table>
+          {loading && (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              <span className="ml-2 text-muted-foreground">Loading data...</span>
+            </div>
+          )}
+          {error && (
+            <div className="flex items-center justify-center py-12">
+              <span className="text-destructive">{error}</span>
+            </div>
+          )}
+          {!loading && !error && data.length === 0 && (
+            <div className="flex items-center justify-center py-12">
+              <span className="text-muted-foreground">No data available. Please upload a dataset first.</span>
+            </div>
+          )}
+          {!loading && !error && data.length > 0 && (
+            <div className="rounded-lg border border-border overflow-hidden">
+              <Table>
               <TableHeader>
                 <TableRow className="bg-muted/50">
                   <TableHead className="w-12">#</TableHead>
@@ -255,22 +288,31 @@ export function InteractiveDataTable() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sortedData.map((row, index) => (
-                  <TableRow key={row.id} className="hover:bg-muted/50">
-                    <TableCell className="font-medium text-muted-foreground">{index + 1}</TableCell>
-                    <TableCell className="font-mono text-sm">{row.timestamp}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{row.threat_type}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={getSeverityColor(row.severity_score)}>{row.severity_score}</Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-sm">{row.source_ip}</TableCell>
-                    <TableCell className="font-mono text-sm">{row.destination_ip}</TableCell>
-                    <TableCell className="text-sm">{(row.bytes_transferred / 1024 / 1024).toFixed(2)} MB</TableCell>
-                    <TableCell>
-                      <Badge variant={getStatusColor(row.status)}>{row.status}</Badge>
-                    </TableCell>
+                {paginatedData.map((row, index) => {
+                  const timestamp = row.timestamp || row.date || row.time || ''
+                  const threatType = row.threat_type || row.type || row.category || 'Unknown'
+                  const severityScore = row.severity_score || row.score || row.severity || 0
+                  const sourceIp = row.source_ip || row.source || row.ip || ''
+                  const destIp = row.destination_ip || row.destination || row.target || ''
+                  const bytes = row.bytes_transferred || row.bytes || row.size || 0
+                  const status = row.status || row.state || 'Unknown'
+                  
+                  return (
+                    <TableRow key={row.id || index} className="hover:bg-muted/50">
+                      <TableCell className="font-medium text-muted-foreground">{startIndex + index + 1}</TableCell>
+                      <TableCell className="font-mono text-sm">{timestamp}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{threatType}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={getSeverityColor(Number(severityScore))}>{severityScore}</Badge>
+                      </TableCell>
+                      <TableCell className="font-mono text-sm">{sourceIp}</TableCell>
+                      <TableCell className="font-mono text-sm">{destIp}</TableCell>
+                      <TableCell className="text-sm">{typeof bytes === 'number' ? (bytes / 1024 / 1024).toFixed(2) + ' MB' : bytes}</TableCell>
+                      <TableCell>
+                        <Badge variant={getStatusColor(status)}>{status}</Badge>
+                      </TableCell>
                     <TableCell>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -286,28 +328,29 @@ export function InteractiveDataTable() {
                       </DropdownMenu>
                     </TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
-          </div>
+            </div>
+          )}
 
-          {/* Pagination */}
           <div className="flex items-center justify-between mt-4">
             <div className="text-sm text-muted-foreground">
-              Showing {Math.min((currentPage - 1) * itemsPerPage + 1, sortedData.length)} to{" "}
-              {Math.min(currentPage * itemsPerPage, sortedData.length)} of {sortedData.length} results
+              Showing {sortedData.length > 0 ? startIndex + 1 : 0} to{" "}
+              {Math.min(endIndex, sortedData.length)} of {sortedData.length} results
             </div>
             <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                disabled={currentPage === 1}
+                disabled={currentPage === 1 || totalPages === 0}
               >
                 Previous
               </Button>
               <div className="flex items-center gap-1">
-                {Array.from({ length: Math.ceil(sortedData.length / itemsPerPage) }, (_, i) => (
+                {Array.from({ length: totalPages }, (_, i) => (
                   <Button
                     key={i + 1}
                     variant={currentPage === i + 1 ? "default" : "outline"}
@@ -322,8 +365,8 @@ export function InteractiveDataTable() {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => setCurrentPage(Math.min(Math.ceil(sortedData.length / itemsPerPage), currentPage + 1))}
-                disabled={currentPage === Math.ceil(sortedData.length / itemsPerPage)}
+                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage === totalPages || totalPages === 0}
               >
                 Next
               </Button>

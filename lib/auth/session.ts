@@ -2,7 +2,7 @@
 
 import { cookies } from 'next/headers'
 import { randomBytes, timingSafeEqual } from 'crypto'
-import { redis } from '../redis'
+import { RedisService } from '../database/redis'
 import { env } from '../../env.mjs'
 import type { User } from '../../types/User'
 import { hashPassword, verifyPassword } from './hash'
@@ -14,9 +14,14 @@ const SESSION_KEY = (s: string) => `session:${s}`
 
 // --- User operations ---
 export async function createUser(input: { username: string; email: string; password: string }): Promise<User> {
-  const exists = await redis.get(USERNAME_KEY(input.username.toLowerCase()))
+  const exists = await RedisService.get<string>(USERNAME_KEY(input.username.toLowerCase()))
   if (exists) throw new Error('Username already taken')
-  const id = String(await redis.incr(USER_SEQ_KEY))
+  
+  // Get next user ID
+  const currentSeq = await RedisService.get<number>(USER_SEQ_KEY) || 0
+  const id = String(currentSeq + 1)
+  await RedisService.set(USER_SEQ_KEY, currentSeq + 1)
+  
   const now = Date.now()
   const passwordHash = await hashPassword(input.password)
   const user: User = {
@@ -27,22 +32,18 @@ export async function createUser(input: { username: string; email: string; passw
     updatedAt: now
   }
   // Store user JSON + password hash (in separate key or same - keep separate for clarity)
-  await redis
-    .multi()
-    .set(USER_KEY(id), JSON.stringify(user))
-    .set(`${USER_KEY(id)}:pw`, passwordHash)
-    .set(USERNAME_KEY(input.username.toLowerCase()), id)
-    .exec()
+  await RedisService.set(USER_KEY(id), user)
+  await RedisService.set(`${USER_KEY(id)}:pw`, passwordHash)
+  await RedisService.set(USERNAME_KEY(input.username.toLowerCase()), id)
   return user
 }
 
 export async function getUserById(id: string): Promise<User | null> {
-  const cached = await redis.get(USER_KEY(id))
-  return cached ? (JSON.parse(cached) as User) : null
+  return await RedisService.get<User>(USER_KEY(id))
 }
 
 export async function getUserByUsername(username: string): Promise<User | null> {
-  const id = await redis.get(USERNAME_KEY(username.toLowerCase()))
+  const id = await RedisService.get<string>(USERNAME_KEY(username.toLowerCase()))
   if (!id) return null
   return getUserById(id)
 }
@@ -64,10 +65,9 @@ export async function createSession(userId: string): Promise<Session> {
   const createdAt = Date.now()
   const expiresAt = createdAt + env.SESSION_TTL_SECONDS * 1000
   const session: Session = { token, userId, createdAt, expiresAt }
-  await redis.set(
+  await RedisService.set(
     SESSION_KEY(token),
-    JSON.stringify(session),
-    'EX',
+    session,
     env.SESSION_TTL_SECONDS
   )
   setSessionCookie(token, expiresAt)
@@ -88,7 +88,7 @@ export function setSessionCookie(token: string, expiresAt: number) {
 }
 
 export async function destroySession(token: string) {
-  await redis.del(SESSION_KEY(token))
+  await RedisService.del(SESSION_KEY(token))
   const cookieStore = cookies()
   cookieStore.delete('session')
 }
@@ -96,7 +96,7 @@ export async function destroySession(token: string) {
 export async function authenticate(username: string, password: string): Promise<User | null> {
   const user = await getUserByUsername(username)
   if (!user) return null
-  const storedHash = await redis.get(`${USER_KEY(user.id)}:pw`)
+  const storedHash = await RedisService.get<string>(`${USER_KEY(user.id)}:pw`)
   if (!storedHash) return null
   const valid = await verifyPassword(password, storedHash)
   return valid ? user : null
@@ -105,13 +105,12 @@ export async function authenticate(username: string, password: string): Promise<
 export async function getSession(): Promise<Session | null> {
   const token = cookies().get('session')?.value
   if (!token) return null
-  const raw = await redis.get(SESSION_KEY(token))
-  if (!raw) return null
-  const session: Session = JSON.parse(raw)
+  const session = await RedisService.get<Session>(SESSION_KEY(token))
+  if (!session) return null
   // Refresh TTL (sliding) optional
   const remaining = session.expiresAt - Date.now()
   if (remaining > 0) {
-    await redis.expire(SESSION_KEY(token), Math.floor(remaining / 1000))
+    await RedisService.expire(SESSION_KEY(token), Math.floor(remaining / 1000))
   }
   return session
 }

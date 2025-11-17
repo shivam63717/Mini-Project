@@ -1,23 +1,21 @@
-
-// Optional: Implement when Redis client available
-// import { createClient, RedisClientType } from 'redis'
+import { RedisService } from '../database/redis'
 import { CacheProvider } from './CacheProvider'
 
 export class RedisCache implements CacheProvider {
-  // private client: RedisClientType
-  constructor(/*url: string*/) {
-    // this.client = createClient({ url })
-    // this.client.connect()
+  constructor() {
+    // RedisService is already initialized in lib/database/redis.ts
   }
+  
   async get<T>(key: string): Promise<T | undefined> {
-    // const v = await this.client.get(key)
-    // return v ? JSON.parse(v) as T : undefined
-    return undefined
+    const value = await RedisService.get<T>(key)
+    return value ?? undefined
   }
+  
   async set<T>(key: string, value: T, ttlSeconds = 60): Promise<void> {
-    // await this.client.set(key, JSON.stringify(value), { EX: ttlSeconds })
+    await RedisService.set(key, value, ttlSeconds)
   }
+  
   async del(key: string): Promise<void> {
-    // await this.client.del(key)
+    await RedisService.del(key)
   }
 }

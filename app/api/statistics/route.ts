@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { RedisService, RedisKeys } from '@/lib/database/redis'
 
-// Mock statistical analysis data
+// Mock statistical analysis data (fallback)
 const mockStatisticalResults = {
   descriptive: {
     summary: {
@@ -155,6 +156,20 @@ export async function GET(request: NextRequest) {
     const type = searchParams.get('type') || 'all'
     const datasetId = searchParams.get('datasetId')
 
+    // Try to get from Redis cache if datasetId is provided
+    if (datasetId && type !== 'all') {
+      const cacheKey = RedisKeys.STATISTICS_RESULT(type, datasetId)
+      const cached = await RedisService.get<any>(cacheKey)
+      if (cached) {
+        return NextResponse.json({
+          success: true,
+          data: cached,
+          cached: true
+        })
+      }
+    }
+
+    // Fallback to mock data
     if (type === 'all') {
       return NextResponse.json({
         success: true,
@@ -199,18 +214,23 @@ export async function POST(request: NextRequest) {
     // Simulate statistical analysis processing
     const analysisId = `stats_${Date.now()}`
     
+    // Store processing status in Redis
+    const processingStatus = {
+      analysisId,
+      status: 'processing',
+      type,
+      datasetId,
+      parameters,
+      estimatedTime: '1-3 minutes',
+      createdAt: new Date().toISOString()
+    }
+    
+    await RedisService.set(RedisKeys.STATISTICS_RESULT(type, analysisId), processingStatus, 3600)
+    
     // In a real implementation, this would trigger statistical computation
     return NextResponse.json({
       success: true,
-      data: {
-        analysisId,
-        status: 'processing',
-        type,
-        datasetId,
-        parameters,
-        estimatedTime: '1-3 minutes',
-        createdAt: new Date().toISOString()
-      }
+      data: processingStatus
     }, { status: 202 })
   } catch (error) {
     console.error('Error processing statistical analysis:', error)

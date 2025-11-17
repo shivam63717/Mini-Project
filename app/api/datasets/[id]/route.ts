@@ -1,64 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { RedisService, RedisKeys } from '@/lib/database/redis'
 
-// Mock data - in real app, this would come from database
-const mockDatasets = [
-  {
-    id: '1',
-    name: 'Cybersecurity Logs',
-    description: 'Network security event logs from firewall and IDS systems',
-    size: '2.4 MB',
-    rows: 15420,
-    columns: 12,
-    createdAt: '2024-01-15T10:30:00Z',
-    updatedAt: '2024-01-15T10:30:00Z',
-    status: 'active',
-    tags: ['security', 'network', 'logs'],
-    schema: [
-      { name: 'timestamp', type: 'datetime', nullable: false },
-      { name: 'source_ip', type: 'string', nullable: false },
-      { name: 'dest_ip', type: 'string', nullable: false },
-      { name: 'port', type: 'integer', nullable: false },
-      { name: 'protocol', type: 'string', nullable: false },
-      { name: 'action', type: 'string', nullable: false },
-      { name: 'severity', type: 'string', nullable: true },
-      { name: 'bytes_sent', type: 'integer', nullable: true },
-      { name: 'bytes_received', type: 'integer', nullable: true },
-      { name: 'duration', type: 'float', nullable: true },
-      { name: 'user_agent', type: 'string', nullable: true },
-      { name: 'threat_score', type: 'float', nullable: true }
-    ],
-    sampleData: [
-      {
-        timestamp: '2024-01-15T10:30:00Z',
-        source_ip: '192.168.1.100',
-        dest_ip: '10.0.0.5',
-        port: 443,
-        protocol: 'HTTPS',
-        action: 'ALLOW',
-        severity: 'LOW',
-        bytes_sent: 1024,
-        bytes_received: 2048,
-        duration: 0.5,
-        user_agent: 'Mozilla/5.0...',
-        threat_score: 0.1
-      },
-      {
-        timestamp: '2024-01-15T10:31:00Z',
-        source_ip: '192.168.1.101',
-        dest_ip: '10.0.0.5',
-        port: 22,
-        protocol: 'SSH',
-        action: 'DENY',
-        severity: 'HIGH',
-        bytes_sent: 0,
-        bytes_received: 0,
-        duration: 0.0,
-        user_agent: null,
-        threat_score: 0.9
-      }
-    ]
-  }
-]
+interface Dataset {
+  id: string
+  name: string
+  description: string
+  size: string
+  rows: number
+  columns: number
+  createdAt: string
+  updatedAt: string
+  status: string
+  tags: string[]
+  schema?: any[]
+  sampleData?: any[]
+}
 
 export async function GET(
   request: NextRequest,
@@ -66,7 +22,7 @@ export async function GET(
 ) {
   try {
     const { id } = params
-    const dataset = mockDatasets.find(d => d.id === id)
+    const dataset = await RedisService.get<Dataset>(RedisKeys.DATASET(id))
 
     if (!dataset) {
       return NextResponse.json(
@@ -97,8 +53,8 @@ export async function PUT(
     const body = await request.json()
     const { name, description, tags } = body
 
-    const datasetIndex = mockDatasets.findIndex(d => d.id === id)
-    if (datasetIndex === -1) {
+    const dataset = await RedisService.get<Dataset>(RedisKeys.DATASET(id))
+    if (!dataset) {
       return NextResponse.json(
         { success: false, error: 'Dataset not found' },
         { status: 404 }
@@ -106,17 +62,19 @@ export async function PUT(
     }
 
     // Update dataset
-    mockDatasets[datasetIndex] = {
-      ...mockDatasets[datasetIndex],
-      name: name || mockDatasets[datasetIndex].name,
-      description: description || mockDatasets[datasetIndex].description,
-      tags: tags || mockDatasets[datasetIndex].tags,
+    const updatedDataset: Dataset = {
+      ...dataset,
+      name: name || dataset.name,
+      description: description || dataset.description,
+      tags: tags || dataset.tags,
       updatedAt: new Date().toISOString()
     }
 
+    await RedisService.set(RedisKeys.DATASET(id), updatedDataset)
+
     return NextResponse.json({
       success: true,
-      data: mockDatasets[datasetIndex]
+      data: updatedDataset
     })
   } catch (error) {
     console.error('Error updating dataset:', error)
@@ -133,17 +91,25 @@ export async function DELETE(
 ) {
   try {
     const { id } = params
-    const datasetIndex = mockDatasets.findIndex(d => d.id === id)
+    const dataset = await RedisService.get<Dataset>(RedisKeys.DATASET(id))
 
-    if (datasetIndex === -1) {
+    if (!dataset) {
       return NextResponse.json(
         { success: false, error: 'Dataset not found' },
         { status: 404 }
       )
     }
 
-    // Remove dataset
-    mockDatasets.splice(datasetIndex, 1)
+    // Remove dataset from Redis
+    await RedisService.del(RedisKeys.DATASET(id))
+    
+    // Remove from list
+    const datasetIds = await RedisService.lrange<string>(RedisKeys.DATASETS_LIST, 0, -1)
+    const filteredIds = datasetIds.filter(datasetId => datasetId !== id)
+    await RedisService.del(RedisKeys.DATASETS_LIST)
+    if (filteredIds.length > 0) {
+      await RedisService.rpush(RedisKeys.DATASETS_LIST, ...filteredIds)
+    }
 
     return NextResponse.json({
       success: true,

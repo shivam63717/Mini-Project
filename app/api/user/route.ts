@@ -1,7 +1,7 @@
 
 import { NextResponse } from 'next/server'
 import { getCurrentUser, getUserById } from '../../../lib/auth/session'
-import { redis } from '../../../lib/redis'
+import { RedisService } from '../../../lib/database/redis'
 
 export async function GET() {
   const user = await getCurrentUser()
@@ -9,13 +9,13 @@ export async function GET() {
 
   // Simple cache layer (cached user:public)
   const cacheKey = `user:public:${user.id}`
-  let cached = await redis.get(cacheKey)
+  let cached = await RedisService.get<{ id: string; username: string; createdAt: number; updatedAt: number }>(cacheKey)
   if (!cached) {
     const fresh = await getUserById(user.id)
     if (!fresh) return NextResponse.json({ user: null }, { status: 200 })
     const publicUser = { ...fresh, email: undefined }
-    await redis.set(cacheKey, JSON.stringify(publicUser), 'EX', 60)
-    cached = JSON.stringify(publicUser)
+    await RedisService.set(cacheKey, publicUser, 60)
+    cached = publicUser
   }
-  return NextResponse.json({ user: JSON.parse(cached) })
+  return NextResponse.json({ user: cached })
 }

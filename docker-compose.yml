@@ -8,9 +8,29 @@ services:
     ports:
       - "${PORT:-3000}:3000"
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     command: npm start
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: mlvision-postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-mlvision}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
@@ -29,4 +49,5 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgres_data:
   redis_data:

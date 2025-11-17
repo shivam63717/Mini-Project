@@ -1,74 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { RedisService, RedisKeys } from '@/lib/database/redis'
-
-interface FeatureOperation {
-  id: string
-  name: string
-  type: string
-  description: string
-  status: string
-  datasetId: string
-  parameters: Record<string, any>
-  results: {
-    features_processed?: number
-    features_selected?: number
-    original_features?: number
-    processing_time: number
-    memory_usage: number
-  }
-  createdAt: string
-  updatedAt: string
-}
-
-interface FeatureImportance {
-  feature: string
-  importance: number
-  type: string
-  description: string
-}
+import { pythonBackendClient } from '@/lib/api/python-backend-client'
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const type = searchParams.get('type') || 'operations'
-    const datasetId = searchParams.get('datasetId')
+    const operationId = searchParams.get('operationId')
 
-    if (type === 'operations') {
-      // Get all feature operation IDs from Redis list
-      const operationIds = await RedisService.lrange<string>(RedisKeys.FEATURE_OPERATIONS_LIST, 0, -1)
-      
-      // Fetch all operations
-      const allOperations: FeatureOperation[] = []
-      for (const id of operationIds) {
-        const operation = await RedisService.get<FeatureOperation>(RedisKeys.FEATURE_OPERATION(id))
-        if (operation) {
-          allOperations.push(operation)
-        }
-      }
-
-      let filteredOperations = allOperations
-
-      if (datasetId) {
-        filteredOperations = filteredOperations.filter(op => op.datasetId === datasetId)
-      }
-
+    if (type === 'operations' && operationId) {
+      // Get specific feature operation
+      const operation = await pythonBackendClient.getFeatureOperation(operationId)
       return NextResponse.json({
         success: true,
-        data: filteredOperations
+        data: operation
+      })
+    }
+
+    if (type === 'operations') {
+      // For listing operations, we'd need a list endpoint in the backend
+      // For now, return empty array or handle via operationId
+      return NextResponse.json({
+        success: true,
+        data: []
       })
     }
 
     if (type === 'importance') {
-      if (datasetId) {
-        const importance = await RedisService.get<FeatureImportance[]>(RedisKeys.FEATURE_IMPORTANCE(datasetId))
-        if (importance) {
-          return NextResponse.json({
-            success: true,
-            data: importance
-          })
-        }
-      }
-
+      // Feature importance would come from experiment results or analysis
+      // This would need to be fetched from experiment/analysis endpoints
       return NextResponse.json({
         success: true,
         data: []
@@ -133,52 +92,44 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { name, type, datasetId, parameters } = body
+    const { datasetId, operations, config } = body
 
-    if (!name || !type || !datasetId) {
+    if (!datasetId || !operations || !Array.isArray(operations)) {
       return NextResponse.json(
-        { success: false, error: 'Name, type, and datasetId are required' },
+        { success: false, error: 'datasetId and operations array are required' },
         { status: 400 }
       )
     }
 
-    // Generate new ID
-    const idSeq = await RedisService.get<number>('feature:id:seq') || 0
-    const newId = String(idSeq + 1)
-    await RedisService.set('feature:id:seq', idSeq + 1)
-
-    // Create new feature operation
-    const newOperation: FeatureOperation = {
-      id: newId,
-      name,
-      type,
-      description: `Feature ${type} operation: ${name}`,
-      status: 'pending',
-      datasetId,
-      parameters: parameters || {},
-      results: {
-        features_processed: 0,
-        processing_time: 0,
-        memory_usage: 0
-      },
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
+    // Validate operations are valid types
+    const validOperations = ['impute', 'encode', 'scale', 'normalize']
+    const invalidOps = operations.filter((op: string) => !validOperations.includes(op))
+    if (invalidOps.length > 0) {
+      return NextResponse.json(
+        { success: false, error: `Invalid operations: ${invalidOps.join(', ')}` },
+        { status: 400 }
+      )
     }
 
-    // Store operation in Redis
-    await RedisService.set(RedisKeys.FEATURE_OPERATION(newId), newOperation)
-    await RedisService.rpush(RedisKeys.FEATURE_OPERATIONS_LIST, newId)
+    // Call Python backend API to queue feature operation
+    const response = await pythonBackendClient.queueFeatureOperation({
+      dataset_id: datasetId,
+      operations: operations as Array<'impute' | 'encode' | 'scale' | 'normalize'>,
+      config: config || {},
+    })
 
-    // In a real implementation, this would trigger background processing
     return NextResponse.json({
       success: true,
-      data: newOperation,
-      message: 'Feature operation queued for processing'
-    }, { status: 201 })
-  } catch (error) {
+      data: {
+        operation_id: response.operation_id,
+        status: 'queued',
+        message: 'Feature operation queued for processing'
+      }
+    }, { status: 202 })
+  } catch (error: any) {
     console.error('Error creating feature operation:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to create feature operation' },
+      { success: false, error: error.message || 'Failed to create feature operation' },
       { status: 500 }
     )
   }

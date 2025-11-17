@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server'
 import { NextResponse } from 'next/server'
-import { RedisService } from '@/lib/database/redis'
+import { auth } from '@/lib/auth'
 
 export async function middleware(request: NextRequest) {
   // Handle CORS
@@ -11,7 +11,7 @@ export async function middleware(request: NextRequest) {
   const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:3001',
-    process.env.NEXTAUTH_URL || 'http://localhost:3000'
+    process.env.BETTER_AUTH_URL
   ]
 
   if (origin && allowedOrigins.includes(origin)) {
@@ -33,18 +33,14 @@ export async function middleware(request: NextRequest) {
   response.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin')
   response.headers.set('X-XSS-Protection', '1; mode=block')
 
-  // Session handling with Redis
-  const sessionToken = request.cookies.get('session')?.value
-  if (sessionToken) {
-    try {
-      const session = await RedisService.get<{ userId: string }>(`session:${sessionToken}`)
-      if (session) {
-        response.headers.set('x-user-id', session.userId)
-      }
-    } catch (error) {
-      // If Redis fails, continue without session (fail open)
-      console.error('Session lookup error:', error)
+  try {
+    const session = await auth.api.getSession({
+      headers: request.headers,
+    })
+    if (session?.user) {
+      response.headers.set('x-user-id', session.user.id)
     }
+  } catch (error) {
   }
 
   // HTTPS redirect in production

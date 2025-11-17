@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { RedisService, RedisKeys } from '@/lib/database/redis'
+import { pythonBackendClient } from '@/lib/api/python-backend-client'
 
-// Mock analytics data (fallback)
+// Mock analytics data (fallback - only used if backend is unavailable)
 const mockAnalyticsData = {
   timeSeries: {
     labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'],
@@ -167,47 +167,36 @@ const mockAnalyticsData = {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const type = searchParams.get('type') || 'all'
     const datasetId = searchParams.get('datasetId')
+    const experimentId = searchParams.get('experimentId')
+    const startDate = searchParams.get('start_date')
+    const endDate = searchParams.get('end_date')
 
-    // Try to get from Redis cache if datasetId is provided
-    if (datasetId && type !== 'all') {
-      const cacheKey = RedisKeys.ANALYTICS_RESULT(type, datasetId)
-      const cached = await RedisService.get<any>(cacheKey)
-      if (cached) {
-        return NextResponse.json({
-          success: true,
-          data: cached,
-          cached: true
-        })
-      }
-    }
+    // Call Python backend API
+    const response = await pythonBackendClient.getAnalyticsDashboard({
+      dataset_id: datasetId || undefined,
+      experiment_id: experimentId || undefined,
+      start_date: startDate || undefined,
+      end_date: endDate || undefined,
+    })
 
-    // Fallback to mock data
-    if (type === 'all') {
-      return NextResponse.json({
-        success: true,
-        data: mockAnalyticsData
-      })
-    }
-
-    // Return specific analytics type
-    const analyticsType = type as keyof typeof mockAnalyticsData
-    if (analyticsType in mockAnalyticsData) {
-      return NextResponse.json({
-        success: true,
-        data: mockAnalyticsData[analyticsType]
-      })
-    }
-
-    return NextResponse.json(
-      { success: false, error: 'Invalid analytics type' },
-      { status: 400 }
-    )
-  } catch (error) {
+    return NextResponse.json({
+      success: true,
+      data: response
+    })
+  } catch (error: any) {
     console.error('Error fetching analytics data:', error)
+    // Fallback to mock data only if backend is unavailable
+    if (error.message?.includes('ECONNREFUSED') || error.message?.includes('timeout')) {
+      console.warn('Backend unavailable, returning mock data')
+      return NextResponse.json({
+        success: true,
+        data: mockAnalyticsData,
+        warning: 'Backend unavailable, showing mock data'
+      })
+    }
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch analytics data' },
+      { success: false, error: error.message || 'Failed to fetch analytics data' },
       { status: 500 }
     )
   }
@@ -216,40 +205,44 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { type, datasetId, parameters } = body
+    const { datasetId, analysisTypes, options } = body
 
-    if (!type || !datasetId) {
+    if (!datasetId || !analysisTypes || !Array.isArray(analysisTypes)) {
       return NextResponse.json(
-        { success: false, error: 'Type and datasetId are required' },
+        { success: false, error: 'datasetId and analysisTypes array are required' },
         { status: 400 }
       )
     }
 
-    // Simulate analytics processing
-    const processingId = `analytics_${Date.now()}`
-    
-    // Store processing status in Redis
-    const processingStatus = {
-      processingId,
-      status: 'processing',
-      type,
-      datasetId,
-      parameters,
-      estimatedTime: '2-5 minutes',
-      createdAt: new Date().toISOString()
+    // Validate analysis types
+    const validTypes = ['descriptive', 'quality', 'correlation', 'timeseries', 'distribution']
+    const invalidTypes = analysisTypes.filter((type: string) => !validTypes.includes(type))
+    if (invalidTypes.length > 0) {
+      return NextResponse.json(
+        { success: false, error: `Invalid analysis types: ${invalidTypes.join(', ')}` },
+        { status: 400 }
+      )
     }
-    
-    await RedisService.set(RedisKeys.ANALYTICS_RESULT(type, processingId), processingStatus, 3600)
-    
-    // In a real implementation, this would trigger background processing
+
+    // Call Python backend API to run analysis
+    const response = await pythonBackendClient.runAnalysis({
+      dataset_id: datasetId,
+      analysis_types: analysisTypes as Array<'descriptive' | 'quality' | 'correlation' | 'timeseries' | 'distribution'>,
+      options: options || {},
+    })
+
     return NextResponse.json({
       success: true,
-      data: processingStatus
+      data: {
+        job_id: response.job_id,
+        status: 'queued',
+        message: 'Analysis job queued for processing'
+      }
     }, { status: 202 })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error processing analytics:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to process analytics' },
+      { success: false, error: error.message || 'Failed to process analytics' },
       { status: 500 }
     )
   }

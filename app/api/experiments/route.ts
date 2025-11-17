@@ -1,80 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { RedisService, RedisKeys } from '@/lib/database/redis'
-
-interface Experiment {
-  id: string
-  name: string
-  description: string
-  status: string
-  algorithm: string
-  accuracy: number
-  precision: number
-  recall: number
-  f1Score: number
-  createdAt: string
-  updatedAt: string
-  datasetId: string
-  hyperparameters: Record<string, any>
-  metrics: {
-    training_time: number
-    inference_time: number
-    memory_usage: number
-  }
-  error?: string
-}
+import { pythonBackendClient } from '@/lib/api/python-backend-client'
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url)
-    const page = parseInt(searchParams.get('page') || '1')
-    const limit = parseInt(searchParams.get('limit') || '10')
-    const status = searchParams.get('status') || ''
-    const algorithm = searchParams.get('algorithm') || ''
+    // Call Python backend API
+    const response = await pythonBackendClient.listExperiments()
 
-    // Get all experiment IDs from Redis list
-    const experimentIds = await RedisService.lrange<string>(RedisKeys.EXPERIMENTS_LIST, 0, -1)
-    
-    // Fetch all experiments
-    const allExperiments: Experiment[] = []
-    for (const id of experimentIds) {
-      const experiment = await RedisService.get<Experiment>(RedisKeys.EXPERIMENT(id))
-      if (experiment) {
-        allExperiments.push(experiment)
-      }
-    }
-
-    // Filter experiments
-    let filteredExperiments = allExperiments
-
-    if (status) {
-      filteredExperiments = filteredExperiments.filter(exp => exp.status === status)
-    }
-
-    if (algorithm) {
-      filteredExperiments = filteredExperiments.filter(exp => 
-        exp.algorithm.toLowerCase().includes(algorithm.toLowerCase())
-      )
-    }
-
-    // Pagination
-    const startIndex = (page - 1) * limit
-    const endIndex = startIndex + limit
-    const paginatedExperiments = filteredExperiments.slice(startIndex, endIndex)
+    // Transform response to match expected format
+    const experiments = Array.isArray(response) ? response : (response.items || response.data || [])
 
     return NextResponse.json({
       success: true,
-      data: paginatedExperiments,
+      data: experiments,
       pagination: {
-        page,
-        limit,
-        total: filteredExperiments.length,
-        totalPages: Math.ceil(filteredExperiments.length / limit)
+        page: 1,
+        limit: experiments.length,
+        total: experiments.length,
+        totalPages: 1
       }
     })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching experiments:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch experiments' },
+      { success: false, error: error.message || 'Failed to fetch experiments' },
       { status: 500 }
     )
   }
@@ -83,54 +31,31 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { name, description, algorithm, datasetId, hyperparameters } = body
+    const { name, algorithm, datasetId, hyperparameters } = body
 
-    if (!name || !description || !algorithm || !datasetId) {
+    if (!name || !algorithm || !datasetId) {
       return NextResponse.json(
-        { success: false, error: 'Name, description, algorithm, and datasetId are required' },
+        { success: false, error: 'Name, algorithm, and datasetId are required' },
         { status: 400 }
       )
     }
 
-    // Generate new ID
-    const idSeq = await RedisService.get<number>('experiment:id:seq') || 0
-    const newId = String(idSeq + 1)
-    await RedisService.set('experiment:id:seq', idSeq + 1)
-
-    // Create new experiment
-    const newExperiment: Experiment = {
-      id: newId,
+    // Call Python backend API
+    const response = await pythonBackendClient.createExperiment({
+      dataset_id: datasetId,
       name,
-      description,
-      status: 'pending',
       algorithm,
-      accuracy: 0,
-      precision: 0,
-      recall: 0,
-      f1Score: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      datasetId,
       hyperparameters: hyperparameters || {},
-      metrics: {
-        training_time: 0,
-        inference_time: 0,
-        memory_usage: 0
-      }
-    }
-
-    // Store experiment in Redis
-    await RedisService.set(RedisKeys.EXPERIMENT(newId), newExperiment)
-    await RedisService.rpush(RedisKeys.EXPERIMENTS_LIST, newId)
+    })
 
     return NextResponse.json({
       success: true,
-      data: newExperiment
+      data: response
     }, { status: 201 })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error creating experiment:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to create experiment' },
+      { success: false, error: error.message || 'Failed to create experiment' },
       { status: 500 }
     )
   }

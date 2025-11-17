@@ -1,73 +1,41 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { RedisService, RedisKeys } from '@/lib/database/redis'
-
-interface Dataset {
-  id: string
-  name: string
-  description: string
-  size: string
-  rows: number
-  columns: number
-  createdAt: string
-  updatedAt: string
-  status: string
-  tags: string[]
-}
+import { pythonBackendClient } from '@/lib/api/python-backend-client'
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
     const page = parseInt(searchParams.get('page') || '1')
-    const limit = parseInt(searchParams.get('limit') || '10')
-    const search = searchParams.get('search') || ''
-    const status = searchParams.get('status') || ''
+    const pageSize = parseInt(searchParams.get('limit') || '10')
+    const name = searchParams.get('search') || searchParams.get('name') || undefined
+    const source = searchParams.get('source') || undefined
+    const updatedFrom = searchParams.get('updated_from') || undefined
+    const updatedTo = searchParams.get('updated_to') || undefined
 
-    // Get all dataset IDs from Redis list
-    const datasetIds = await RedisService.lrange<string>(RedisKeys.DATASETS_LIST, 0, -1)
-    
-    // Fetch all datasets
-    const allDatasets: Dataset[] = []
-    for (const id of datasetIds) {
-      const dataset = await RedisService.get<Dataset>(RedisKeys.DATASET(id))
-      if (dataset) {
-        allDatasets.push(dataset)
-      }
-    }
+    // Call Python backend API
+    const response = await pythonBackendClient.listDatasets({
+      name,
+      source: source as any,
+      updated_from: updatedFrom,
+      updated_to: updatedTo,
+      page,
+      page_size: pageSize,
+    })
 
-    // Filter datasets
-    let filteredDatasets = allDatasets
-
-    if (search) {
-      filteredDatasets = filteredDatasets.filter(dataset =>
-        dataset.name.toLowerCase().includes(search.toLowerCase()) ||
-        dataset.description.toLowerCase().includes(search.toLowerCase()) ||
-        dataset.tags.some(tag => tag.toLowerCase().includes(search.toLowerCase()))
-      )
-    }
-
-    if (status) {
-      filteredDatasets = filteredDatasets.filter(dataset => dataset.status === status)
-    }
-
-    // Pagination
-    const startIndex = (page - 1) * limit
-    const endIndex = startIndex + limit
-    const paginatedDatasets = filteredDatasets.slice(startIndex, endIndex)
-
+    // Transform response to match expected format
     return NextResponse.json({
       success: true,
-      data: paginatedDatasets,
+      data: response.items || response.data || [],
       pagination: {
-        page,
-        limit,
-        total: filteredDatasets.length,
-        totalPages: Math.ceil(filteredDatasets.length / limit)
+        page: response.page || page,
+        limit: response.page_size || pageSize,
+        total: response.total || 0,
+        totalPages: response.total_pages || Math.ceil((response.total || 0) / pageSize)
       }
     })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error fetching datasets:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch datasets' },
+      { success: false, error: error.message || 'Failed to fetch datasets' },
       { status: 500 }
     )
   }
@@ -76,46 +44,33 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { name, description, tags } = body
+    const { name, description, schema, row_count, source, files } = body
 
-    if (!name || !description) {
+    if (!name) {
       return NextResponse.json(
-        { success: false, error: 'Name and description are required' },
+        { success: false, error: 'Name is required' },
         { status: 400 }
       )
     }
 
-    // Generate new ID
-    const idSeq = await RedisService.get<number>('dataset:id:seq') || 0
-    const newId = String(idSeq + 1)
-    await RedisService.set('dataset:id:seq', idSeq + 1)
-
-    // Create new dataset
-    const newDataset: Dataset = {
-      id: newId,
+    // Call Python backend API
+    const response = await pythonBackendClient.createDataset({
       name,
-      description,
-      size: '0 MB',
-      rows: 0,
-      columns: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      status: 'pending',
-      tags: tags || []
-    }
-
-    // Store dataset in Redis
-    await RedisService.set(RedisKeys.DATASET(newId), newDataset)
-    await RedisService.rpush(RedisKeys.DATASETS_LIST, newId)
+      description: description || '',
+      schema,
+      row_count: row_count || 0,
+      source: source || 'internal',
+      files: files || [],
+    })
 
     return NextResponse.json({
       success: true,
-      data: newDataset
+      data: response
     }, { status: 201 })
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error creating dataset:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to create dataset' },
+      { success: false, error: error.message || 'Failed to create dataset' },
       { status: 500 }
     )
   }

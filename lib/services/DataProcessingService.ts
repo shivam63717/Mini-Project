@@ -39,7 +39,7 @@ export class DataProcessingService {
   // Dataset Processing
   async processDataset(config: DataProcessingConfig): Promise<ProcessingResult> {
     const startTime = Date.now()
-    
+
     try {
       // Get dataset
       const dataset = await DatasetModel.getById(config.datasetId)
@@ -84,7 +84,7 @@ export class DataProcessingService {
 
     } catch (error) {
       console.error('Dataset processing error:', error)
-      
+
       // Update dataset status to error
       await DatasetModel.updateStatus(config.datasetId, 'error')
 
@@ -101,28 +101,28 @@ export class DataProcessingService {
     switch (operation) {
       case 'validate':
         return await this.validator.validateDataset(dataset, parameters)
-      
+
       case 'analyze':
         return await this.analyzer.analyzeDataset(dataset, parameters)
-      
+
       case 'preprocess':
         return await this.featureProcessor.preprocessData(dataset, parameters)
-      
+
       case 'feature_engineering':
         return await this.featureProcessor.engineerFeatures(dataset, parameters)
-      
+
       case 'quality_assessment':
         return await this.analyzer.assessDataQuality(dataset, parameters)
-      
+
       case 'statistical_analysis':
         return await this.analyzer.performStatisticalAnalysis(dataset, parameters)
-      
+
       case 'correlation_analysis':
         return await this.analyzer.analyzeCorrelations(dataset, parameters)
-      
+
       case 'distribution_analysis':
         return await this.analyzer.analyzeDistributions(dataset, parameters)
-      
+
       default:
         throw new Error(`Unknown operation: ${operation}`)
     }
@@ -146,7 +146,7 @@ export class DataProcessingService {
       }
 
       const results = await this.featureProcessor.engineerFeatures(dataset, config.parameters)
-      
+
       if (config.saveResults) {
         // Save engineered features
         await this.saveEngineeredFeatures(datasetId, results)
@@ -254,7 +254,7 @@ export class DataProcessingService {
 
     } catch (error) {
       console.error('Model training error:', error)
-      
+
       // Update experiment status to failed
       await ExperimentModel.fail(experimentId, error instanceof Error ? error.message : 'Unknown error')
 
@@ -271,54 +271,83 @@ export class DataProcessingService {
     const startTime = Date.now()
 
     try {
-      const dataset = await DatasetModel.getById(datasetId)
-      if (!dataset) {
-        return {
-          success: false,
-          error: 'Dataset not found'
+      // Map analytics types to backend analysis types
+      const analysisTypeMap: Record<string, 'descriptive' | 'quality' | 'correlation' | 'timeseries' | 'distribution'> = {
+        'time_series': 'timeseries',
+        'clustering': 'descriptive', // Clustering would be part of descriptive or separate
+        'anomaly_detection': 'quality',
+        'correlation': 'correlation',
+        'statistical': 'descriptive',
+        'descriptive': 'descriptive',
+        'quality': 'quality',
+        'timeseries': 'timeseries',
+        'distribution': 'distribution',
+      }
+
+      const backendAnalysisType = analysisTypeMap[analyticsType] || 'descriptive'
+
+      // Import Python backend client
+      const { pythonBackendClient } = await import('@/lib/api/python-backend-client')
+
+      // Run analysis via Python backend
+      const jobResponse = await pythonBackendClient.runAnalysis({
+        dataset_id: datasetId,
+        analysis_types: [backendAnalysisType],
+        options: parameters || {},
+      })
+
+      // Poll for results (with timeout)
+      const maxWaitTime = 300000 // 5 minutes
+      const pollInterval = 2000 // 2 seconds
+      const startPollTime = Date.now()
+      let jobStatus: any
+
+      while (Date.now() - startPollTime < maxWaitTime) {
+        jobStatus = await pythonBackendClient.getAnalysisJobStatus(jobResponse.job_id)
+
+        if (jobStatus.status === 'completed') {
+          const results = await pythonBackendClient.getAnalysisJobResults(jobResponse.job_id)
+
+          // Cache results in Redis
+          await RedisService.set(
+            RedisKeys.ANALYTICS_RESULT(analyticsType, datasetId),
+            results,
+            3600 // 1 hour TTL
+          )
+
+          return {
+            success: true,
+            data: results,
+            metadata: {
+              datasetId,
+              analyticsType,
+              jobId: jobResponse.job_id,
+              processingTime: Date.now() - startTime
+            },
+            processingTime: Date.now() - startTime
+          }
         }
+
+        if (jobStatus.status === 'failed') {
+          throw new Error(jobStatus.error || 'Analysis job failed')
+        }
+
+        // Wait before next poll
+        await new Promise(resolve => setTimeout(resolve, pollInterval))
       }
 
-      let results: any
-
-      switch (analyticsType) {
-        case 'time_series':
-          results = await this.analyzer.analyzeTimeSeries(dataset, parameters)
-          break
-        
-        case 'clustering':
-          results = await this.analyzer.performClustering(dataset, parameters)
-          break
-        
-        case 'anomaly_detection':
-          results = await this.analyzer.detectAnomalies(dataset, parameters)
-          break
-        
-        case 'correlation':
-          results = await this.analyzer.analyzeCorrelations(dataset, parameters)
-          break
-        
-        case 'statistical':
-          results = await this.analyzer.performStatisticalAnalysis(dataset, parameters)
-          break
-        
-        default:
-          throw new Error(`Unknown analytics type: ${analyticsType}`)
-      }
-
-      // Cache results in Redis
-      await RedisService.set(
-        RedisKeys.ANALYTICS_RESULT(analyticsType, datasetId),
-        results,
-        3600 // 1 hour TTL
-      )
-
+      // Timeout - return job info for async polling
       return {
         success: true,
-        data: results,
+        data: {
+          job_id: jobResponse.job_id,
+          status: jobStatus?.status || 'processing',
+          message: 'Analysis job is still processing. Poll /api/v1/analysis/jobs/{job_id} for results.'
+        },
         metadata: {
           datasetId,
           analyticsType,
+          jobId: jobResponse.job_id,
           processingTime: Date.now() - startTime
         },
         processingTime: Date.now() - startTime
@@ -339,51 +368,15 @@ export class DataProcessingService {
     const startTime = Date.now()
 
     try {
-      const dataset = await DatasetModel.getById(datasetId)
-      if (!dataset) {
-        return {
-          success: false,
-          error: 'Dataset not found'
-        }
-      }
+      // Import Python backend client
+      const { pythonBackendClient } = await import('@/lib/api/python-backend-client')
 
-      let results: any
-
-      switch (statisticsType) {
-        case 'descriptive':
-          results = await this.analyzer.getDescriptiveStatistics(dataset, parameters)
-          break
-        
-        case 'hypothesis_testing':
-          results = await this.analyzer.performHypothesisTesting(dataset, parameters)
-          break
-        
-        case 'correlation':
-          results = await this.analyzer.analyzeCorrelations(dataset, parameters)
-          break
-        
-        case 'regression':
-          results = await this.analyzer.performRegressionAnalysis(dataset, parameters)
-          break
-        
-        case 'distribution':
-          results = await this.analyzer.analyzeDistributions(dataset, parameters)
-          break
-        
-        case 'bayesian':
-          results = await this.analyzer.performBayesianAnalysis(dataset, parameters)
-          break
-        
-        default:
-          throw new Error(`Unknown statistics type: ${statisticsType}`)
-      }
-
-      // Cache results in Redis
-      await RedisService.set(
-        RedisKeys.STATISTICS_RESULT(statisticsType, datasetId),
-        results,
-        3600 // 1 hour TTL
-      )
+      // Get statistics summary from Python backend
+      const results = await pythonBackendClient.getStatisticsSummary({
+        dataset_id: datasetId,
+        columns: parameters?.columns,
+        options: parameters || {},
+      })
 
       return {
         success: true,

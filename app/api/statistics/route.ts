@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { RedisService, RedisKeys } from '@/lib/database/redis'
+import { pythonBackendClient } from '@/lib/api/python-backend-client'
 
-// Mock statistical analysis data (fallback)
+// Mock statistical analysis data (fallback - only used if backend is unavailable)
 const mockStatisticalResults = {
   descriptive: {
     summary: {
@@ -153,47 +153,39 @@ const mockStatisticalResults = {
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const type = searchParams.get('type') || 'all'
     const datasetId = searchParams.get('datasetId')
+    const columns = searchParams.get('columns')?.split(',').filter(Boolean)
 
-    // Try to get from Redis cache if datasetId is provided
-    if (datasetId && type !== 'all') {
-      const cacheKey = RedisKeys.STATISTICS_RESULT(type, datasetId)
-      const cached = await RedisService.get<any>(cacheKey)
-      if (cached) {
-        return NextResponse.json({
-          success: true,
-          data: cached,
-          cached: true
-        })
-      }
+    if (!datasetId) {
+      return NextResponse.json(
+        { success: false, error: 'datasetId is required' },
+        { status: 400 }
+      )
     }
 
-    // Fallback to mock data
-    if (type === 'all') {
-      return NextResponse.json({
-        success: true,
-        data: mockStatisticalResults
-      })
-    }
+    // Call Python backend API
+    const response = await pythonBackendClient.getStatisticsSummary({
+      dataset_id: datasetId,
+      columns: columns,
+    })
 
-    // Return specific statistical analysis type
-    const analysisType = type as keyof typeof mockStatisticalResults
-    if (analysisType in mockStatisticalResults) {
-      return NextResponse.json({
-        success: true,
-        data: mockStatisticalResults[analysisType]
-      })
-    }
-
-    return NextResponse.json(
-      { success: false, error: 'Invalid statistical analysis type' },
-      { status: 400 }
-    )
-  } catch (error) {
+    return NextResponse.json({
+      success: true,
+      data: response
+    })
+  } catch (error: any) {
     console.error('Error fetching statistical data:', error)
+    // Fallback to mock data only if backend is unavailable
+    if (error.message?.includes('ECONNREFUSED') || error.message?.includes('timeout')) {
+      console.warn('Backend unavailable, returning mock data')
+      return NextResponse.json({
+        success: true,
+        data: mockStatisticalResults,
+        warning: 'Backend unavailable, showing mock data'
+      })
+    }
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch statistical data' },
+      { success: false, error: error.message || 'Failed to fetch statistical data' },
       { status: 500 }
     )
   }
@@ -202,40 +194,30 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { type, datasetId, parameters } = body
+    const { datasetId, columns, options } = body
 
-    if (!type || !datasetId) {
+    if (!datasetId) {
       return NextResponse.json(
-        { success: false, error: 'Type and datasetId are required' },
+        { success: false, error: 'datasetId is required' },
         { status: 400 }
       )
     }
 
-    // Simulate statistical analysis processing
-    const analysisId = `stats_${Date.now()}`
-    
-    // Store processing status in Redis
-    const processingStatus = {
-      analysisId,
-      status: 'processing',
-      type,
-      datasetId,
-      parameters,
-      estimatedTime: '1-3 minutes',
-      createdAt: new Date().toISOString()
-    }
-    
-    await RedisService.set(RedisKeys.STATISTICS_RESULT(type, analysisId), processingStatus, 3600)
-    
-    // In a real implementation, this would trigger statistical computation
+    // Call Python backend API for synchronous statistics summary
+    const response = await pythonBackendClient.getStatisticsSummary({
+      dataset_id: datasetId,
+      columns: columns,
+      options: options || {},
+    })
+
     return NextResponse.json({
       success: true,
-      data: processingStatus
-    }, { status: 202 })
-  } catch (error) {
+      data: response
+    })
+  } catch (error: any) {
     console.error('Error processing statistical analysis:', error)
     return NextResponse.json(
-      { success: false, error: 'Failed to process statistical analysis' },
+      { success: false, error: error.message || 'Failed to process statistical analysis' },
       { status: 500 }
     )
   }
